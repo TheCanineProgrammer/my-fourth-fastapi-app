@@ -1,12 +1,12 @@
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from typing import List, Optional
-from datasets import load_dataset
 import os
 import openai
 import pandas as pd
 from rapidfuzz import process, fuzz
 import logging
+import dask.dataframe as dd
 
 # ------------------------------
 # Logging configuration
@@ -23,6 +23,12 @@ logging.getLogger("datasets").setLevel(logging.WARNING)
 # ------------------------------
 #openai.api_key = "trb-efb1e474594463bbea-27e8-4578-b6ff-b2aed5414b57"
 #openai.api_base = "https://turbo.torob.com/v1"
+
+storage_options = {
+    "key": "ZTeZ9y0SEj3gazBrpl6w",
+    "secret": "h1K1gAxb5uggNo6iNCWUg02w3JfBvwEECNJzPa8y",
+    "client_kwargs": {"endpoint_url": "https://newminio.darkube.app"}
+}
 
 # ------------------------------
 # FastAPI setup
@@ -44,10 +50,7 @@ class ChatRequest(BaseModel):
 # Load dataset
 # ------------------------------
 
-dataset = load_dataset("The-CaPr-2025/base_products")  # pulls from HF Hub
-base_df = dataset["train"].to_pandas()
-ds1 = load_dataset("The-CaPr-2025/members")
-members = ds1["train"].to_pandas()
+base_df = dd.read_parquet("s3://mybucket/base_products.parquet", storage_options=storage_options)[["random_key", "english_name", "persian_name", "extra_features"]].compute()
 
 #random_key_to_names = base_df.set_index("random_key")[["english_name", "persian_name"]].to_dict(orient="index")
 all_names = list(base_df.persian_name) + list(base_df.english_name)
@@ -175,20 +178,24 @@ async def assistant(request: ChatRequest):
             }
     
     elif intent == "vendor" and matched_row is not None:
-        
-        records = members[members["base_random_key"] == key].set_index("base_random_key").to_dict(orient = "records")
-        df = pd.DataFrame(records)
+        members = dd.read_parquet("s3://mybucket/members.parquet", storage_options=storage_options)
+        subset = members[members["base_random_key"] == key]
+        min_price = subset["price"].min().compute()
+        max_price = subset["price"].max().compute()
+        mean_price = subset["price"].mean().compute()
+
         aggregates = {
-            "min_price": df["price"].min(),
-            "max_price": df["price"].max(),
-            "mean_price": round(df["price"].mean(), 2)
-        }
-        prompt = f"""
+                    "min_price": min_price,
+                    "max_price": max_price,
+                    "mean_price": round(mean_price, 2)
+                }
+
+        prompt = f'''
     کاربر سوالی درباره فروشنده ها پرسیده است.
     فقط مقدار عددی مدنظر کاربر را برگردان، هیچ توضیح اضافه نده.
     اعداد محاسبه شده برای این محصول: {aggregates}
     سوال کاربر: "{last_message}"
-    """
+    '''
 
         # Call OpenAI LLM to select which number to return
         try:
