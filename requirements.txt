@@ -6,3 +6,4 @@ pandas
 dask
 rapidfuzz
 s3fs
+pyarrow
